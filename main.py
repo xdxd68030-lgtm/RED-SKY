@@ -30,14 +30,9 @@ class TrackerClient(discord.Client):
             print("HATA: BEKLEME_SURE sadece sayilardan olusmali! Standart olarak 1 dakika uygulaniyor.")
             self.bekleme_saniye = 60
 
-        # Her kullanici icin ayri takip verisi
         self.last_message_time = {uid: time.time() for uid in TARGET_IDS}
         self.notified = {uid: False for uid in TARGET_IDS}
-        # Son mesaj bilgileri: {uid: {"content": str, "link": str, "timestamp": datetime}}
         self.last_message_info = {uid: None for uid in TARGET_IDS}
-
-    async def setup_hook(self) -> None:
-        self.bg_task = self.loop.create_task(self.check_activity())
 
     async def on_ready(self):
         print('-----------------------------------------')
@@ -45,20 +40,21 @@ class TrackerClient(discord.Client):
         print(f"Takip Edilen ID'ler: {TARGET_IDS}")
         print(f'Bekleme Suresi: {self.bekleme_saniye / 60} dakika')
         print('-----------------------------------------')
+        # Background task'i sadece bir kez baslat
+        if not hasattr(self, '_bg_task_started'):
+            self._bg_task_started = True
+            self.loop.create_task(self.check_activity())
 
     async def on_message(self, message):
         uid = str(message.author.id)
         if uid in TARGET_IDS:
             self.last_message_time[uid] = time.time()
 
-            # Mesaj bilgilerini kaydet
-            # DM'de guild olmaz, guild mesajinda link formatli
             if message.guild:
                 link = f"https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}"
             else:
                 link = f"https://discord.com/channels/@me/{message.channel.id}/{message.id}"
 
-            # Istanbul saatine cevir
             istanbul_time = message.created_at.replace(tzinfo=timezone.utc).astimezone(ISTANBUL_TZ)
 
             self.last_message_info[uid] = {
@@ -68,7 +64,7 @@ class TrackerClient(discord.Client):
             }
 
             if self.notified[uid]:
-                print(f"[{uid}] Kullanici tekrar mesaj gonderdi. Sayac yeniden {self.bekleme_saniye / 60} dakika icin basladi.")
+                print(f"[{uid}] Kullanici tekrar mesaj gonderdi. Sayac sifirlandi.")
             self.notified[uid] = False
 
     async def check_activity(self):
@@ -78,14 +74,13 @@ class TrackerClient(discord.Client):
             for uid in TARGET_IDS:
                 time_passed = current_time - self.last_message_time[uid]
                 if time_passed >= self.bekleme_saniye and not self.notified[uid]:
-                    print(f"[BILDIRIM] Kullanici {uid}, {self.bekleme_saniye / 60} dakikadir mesaj atmiyor. Webhook tetikleniyor...")
+                    print(f"[BILDIRIM] {uid} icin webhook tetikleniyor...")
                     self.send_webhook(uid)
                     self.notified[uid] = True
             await asyncio.sleep(5)
 
     def send_webhook(self, uid):
         if not WEBHOOK:
-            print("Webhook URL tanimli degil!")
             return
 
         info = self.last_message_info.get(uid)
@@ -96,7 +91,7 @@ class TrackerClient(discord.Client):
             son_mesaj = info["content"]
             git_link = info["link"]
         else:
-            son_mesaj_saati = "Bilinmiyor (Bot baslayali beri mesaj atmadi)"
+            son_mesaj_saati = "Bilinmiyor"
             son_mesaj = "Bilinmiyor"
             git_link = "Mevcut degil"
 
@@ -104,63 +99,36 @@ class TrackerClient(discord.Client):
             "title": "⚠️ Mesaj Kesintisi Bildirimi",
             "color": 0xFF4444,
             "fields": [
-                {
-                    "name": "👤 Kullanıcı ID",
-                    "value": f"<@{uid}> (`{uid}`)",
-                    "inline": False
-                },
-                {
-                    "name": "⏱️ Süre",
-                    "value": f"{bekleme_dk} dakika sessiz kaldı",
-                    "inline": False
-                },
-                {
-                    "name": "🕐 Son Mesaj Saati",
-                    "value": f"`{son_mesaj_saati}` (İstanbul saati)",
-                    "inline": False
-                },
-                {
-                    "name": "💬 Son Mesaj",
-                    "value": son_mesaj[:1024] if son_mesaj else "Bilinmiyor",
-                    "inline": False
-                },
-                {
-                    "name": "🔗 Git",
-                    "value": git_link,
-                    "inline": False
-                }
+                {"name": "👤 Kullanıcı ID", "value": f"<@{uid}> (`{uid}`)", "inline": False},
+                {"name": "⏱️ Süre", "value": f"{bekleme_dk} dakika sessiz kaldı", "inline": False},
+                {"name": "🕐 Son Mesaj Saati", "value": f"`{son_mesaj_saati}` (İstanbul saati)", "inline": False},
+                {"name": "💬 Son Mesaj", "value": son_mesaj[:1024], "inline": False},
+                {"name": "🔗 Git", "value": git_link, "inline": False}
             ],
-            "footer": {
-                "text": "Discord Mesaj Takip Botu"
-            }
+            "footer": {"text": "Discord Mesaj Takip Botu"}
         }
 
-        data = {
-            "username": "Mesaj Takip Botu",
-            "embeds": [embed]
-        }
+        data = {"username": "Mesaj Takip Botu", "embeds": [embed]}
 
         try:
             response = requests.post(WEBHOOK, json=data)
             if response.status_code in [200, 204]:
                 print(f"[{uid}] Webhook basariyla iletildi.")
             else:
-                print(f"[{uid}] Webhook gonderilirken hata. Durum Kodu: {response.status_code} | Yanit: {response.text}")
+                print(f"[{uid}] Webhook hatasi: {response.status_code}")
         except Exception as e:
             print(f"[{uid}] Webhook gonderim hatasi: {e}")
 
 
-# Render gibi platformlarda projenin kapanmamasi icin dummy bir web sunucusu aciyoruz
 keep_alive()
 
 if not TOKEN or not TARGET_IDS or not WEBHOOK:
-    print("HATA: Lutfen TOKEN, TARGET_IDS, WEBHOOK ve BEKLEME_SURE degiskenlerini Environment kismina ekleyin.")
-    print("TARGET_IDS icin birden fazla ID virgul ile ayrilmali. Ornek: 123456789,987654321")
+    print("HATA: TOKEN, TARGET_IDS, WEBHOOK degiskenlerini Environment kismina ekleyin.")
 else:
     try:
         client = TrackerClient()
         client.run(TOKEN)
     except discord.LoginFailure:
-        print("HATA: Hatali token. Lutfen hesabin self tokenini girdiginizden emin olun.")
+        print("HATA: Hatali token!")
     except Exception as e:
         print(f"Beklenmeyen bir hata olustu: {e}")
