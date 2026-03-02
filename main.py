@@ -30,7 +30,9 @@ class TrackerClient(discord.Client):
             print("HATA: BEKLEME_SURE sadece sayilardan olusmali! Standart olarak 1 dakika uygulaniyor.")
             self.bekleme_saniye = 60
 
-        self.last_message_time = {uid: time.time() for uid in TARGET_IDS}
+        # None = henuz mesaj gormemisiz, bildirim ATMA
+        # time.time() = mesaj goruldu, susarsa bildirim AT
+        self.last_message_time = {uid: None for uid in TARGET_IDS}
         self.notified = {uid: False for uid in TARGET_IDS}
         self.last_message_info = {uid: None for uid in TARGET_IDS}
 
@@ -43,7 +45,7 @@ class TrackerClient(discord.Client):
         # Background task'i sadece bir kez baslat
         if not hasattr(self, '_bg_task_started'):
             self._bg_task_started = True
-            self.loop.create_task(self.check_activity())
+            asyncio.ensure_future(self.check_activity())
 
     async def on_message(self, message):
         uid = str(message.author.id)
@@ -55,7 +57,11 @@ class TrackerClient(discord.Client):
             else:
                 link = f"https://discord.com/channels/@me/{message.channel.id}/{message.id}"
 
-            istanbul_time = message.created_at.replace(tzinfo=timezone.utc).astimezone(ISTANBUL_TZ)
+            # discord.py-self 2.x'te created_at zaten timezone-aware (UTC)
+            try:
+                istanbul_time = message.created_at.astimezone(ISTANBUL_TZ)
+            except Exception:
+                istanbul_time = message.created_at.replace(tzinfo=timezone.utc).astimezone(ISTANBUL_TZ)
 
             self.last_message_info[uid] = {
                 "content": message.content if message.content else "(Metin icerigi yok - Dosya/Embed vb.)",
@@ -72,6 +78,10 @@ class TrackerClient(discord.Client):
         while not self.is_closed():
             current_time = time.time()
             for uid in TARGET_IDS:
+                # Sadece en az 1 mesaj gorduysek kontrol et
+                if self.last_message_time[uid] is None:
+                    continue
+
                 time_passed = current_time - self.last_message_time[uid]
                 if time_passed >= self.bekleme_saniye and not self.notified[uid]:
                     print(f"[BILDIRIM] {uid} icin webhook tetikleniyor...")
@@ -99,9 +109,9 @@ class TrackerClient(discord.Client):
             "title": "⚠️ Mesaj Kesintisi Bildirimi",
             "color": 0xFF4444,
             "fields": [
-                {"name": "👤 Kullanıcı ID", "value": f"<@{uid}> (`{uid}`)", "inline": False},
-                {"name": "⏱️ Süre", "value": f"{bekleme_dk} dakika sessiz kaldı", "inline": False},
-                {"name": "🕐 Son Mesaj Saati", "value": f"`{son_mesaj_saati}` (İstanbul saati)", "inline": False},
+                {"name": "👤 Kullanici ID", "value": f"<@{uid}> (`{uid}`)", "inline": False},
+                {"name": "⏱️ Sure", "value": f"{bekleme_dk} dakika sessiz kaldi", "inline": False},
+                {"name": "🕐 Son Mesaj Saati", "value": f"`{son_mesaj_saati}` (Istanbul saati)", "inline": False},
                 {"name": "💬 Son Mesaj", "value": son_mesaj[:1024], "inline": False},
                 {"name": "🔗 Git", "value": git_link, "inline": False}
             ],
