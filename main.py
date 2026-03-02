@@ -106,19 +106,19 @@ class TrackerClient(discord.Client):
             git_link = "Mevcut degil"
 
         embed = {
-            "title": "⚠️ Mesaj Kesintisi Bildirimi",
+            "title": "KULLANICI MESAJ KESMİŞTİR XD",
             "color": 0xFF4444,
             "fields": [
-                {"name": "👤 Kullanici ID", "value": f"<@{uid}> (`{uid}`)", "inline": False},
-                {"name": "⏱️ Sure", "value": f"{bekleme_dk} dakika sessiz kaldi", "inline": False},
-                {"name": "🕐 Son Mesaj Saati", "value": f"`{son_mesaj_saati}` (Istanbul saati)", "inline": False},
-                {"name": "💬 Son Mesaj", "value": son_mesaj[:1024], "inline": False},
-                {"name": "🔗 Git", "value": git_link, "inline": False}
+                {"name": "Kullanıcı ID", "value": f"<@{uid}> (`{uid}`)", "inline": False},
+                {"name": "Sure", "value": f"{bekleme_dk} dakika sessiz kaldi", "inline": False},
+                {"name": "Son Mesaj Saati", "value": f"`{son_mesaj_saati}`", "inline": False},
+                {"name": "Son Mesaj", "value": son_mesaj[:1024], "inline": False},
+                {"name": "Git", "value": git_link, "inline": False}
             ],
-            "footer": {"text": "Discord Mesaj Takip Botu"}
+            "footer": {"text": "RED SKY TARGET SYSTEM"}
         }
 
-        data = {"username": "Mesaj Takip Botu", "embeds": [embed]}
+        data = {"username": "RED SKY TARGET SYSTEM", "embeds": [embed]}
 
         try:
             response = requests.post(WEBHOOK, json=data)
