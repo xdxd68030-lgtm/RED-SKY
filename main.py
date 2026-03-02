@@ -2,143 +2,150 @@ import discord
 import os
 import asyncio
 import time
-import requests
+import aiohttp
 from datetime import datetime, timezone, timedelta
 from keep_alive import keep_alive
 
-# Environment (Ortam) Degiskenlerini Cekiyoruz
+# Environment (Ortam) Değişkenleri
 TOKEN = os.environ.get("TOKEN")
-BEKLEME_SURE = os.environ.get("BEKLEME_SURE")  # dakika cinsinden, ornek: "1"
-WEBHOOK = os.environ.get("WEBHOOK")
+BEKLEME_SURE = os.environ.get("BEKLEME_SURE")  # dakika cinsinden
+WEBHOOK_URL = os.environ.get("WEBHOOK")
 
-# Birden fazla kullanici ID'si virgullerle ayrilarak yazilir
-# Ornek: TARGET_IDS=123456789,987654321,111222333
 TARGET_IDS_RAW = os.environ.get("TARGET_IDS", "")
 TARGET_IDS = [uid.strip() for uid in TARGET_IDS_RAW.split(",") if uid.strip()]
 
-# Istanbul saat dilimi (UTC+3)
+# İstanbul saat dilimi (UTC+3)
 ISTANBUL_TZ = timezone(timedelta(hours=3))
-
 
 class TrackerClient(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
+        
         try:
             self.bekleme_saniye = int(BEKLEME_SURE) * 60 if BEKLEME_SURE else 60
         except ValueError:
-            print("HATA: BEKLEME_SURE sadece sayilardan olusmali! Standart olarak 1 dakika uygulaniyor.")
+            print("HATA: BEKLEME_SURE sadece sayılardan oluşmalı! Varsayılan: 1 dakika.")
             self.bekleme_saniye = 60
 
-        # None = henuz mesaj gormemisiz, bildirim ATMA
-        # time.time() = mesaj goruldu, susarsa bildirim AT
         self.last_message_time = {uid: None for uid in TARGET_IDS}
         self.notified = {uid: False for uid in TARGET_IDS}
         self.last_message_info = {uid: None for uid in TARGET_IDS}
+        self.session = None  # Asenkron HTTP oturumu
+
+    async def setup_hook(self):
+        """Bot çalışmaya başladığında yapılacak ilk işlemler."""
+        self.session = aiohttp.ClientSession()
+        # Arka plan kontrol görevini başlat
+        self.loop.create_task(self.check_activity())
 
     async def on_ready(self):
         print('-----------------------------------------')
-        print(f'Giris Yapildi: {self.user}')
+        print(f'Giriş Yapıldı: {self.user}')
         print(f"Takip Edilen ID'ler: {TARGET_IDS}")
-        print(f'Bekleme Suresi: {self.bekleme_saniye / 60} dakika')
+        print(f'Bekleme Süresi: {self.bekleme_saniye / 60} dakika')
         print('-----------------------------------------')
-        # Background task'i sadece bir kez baslat
-        if not hasattr(self, '_bg_task_started'):
-            self._bg_task_started = True
-            asyncio.ensure_future(self.check_activity())
 
     async def on_message(self, message):
         uid = str(message.author.id)
         if uid in TARGET_IDS:
             self.last_message_time[uid] = time.time()
 
+            # Kanal ve Mesaj linki oluşturma
             if message.guild:
                 link = f"https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}"
             else:
                 link = f"https://discord.com/channels/@me/{message.channel.id}/{message.id}"
 
-            # discord.py-self 2.x'te created_at zaten timezone-aware (UTC)
-            try:
-                istanbul_time = message.created_at.astimezone(ISTANBUL_TZ)
-            except Exception:
-                istanbul_time = message.created_at.replace(tzinfo=timezone.utc).astimezone(ISTANBUL_TZ)
+            # UTC zamanını İstanbul zamanına çevir
+            created_at = message.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            istanbul_time = created_at.astimezone(ISTANBUL_TZ)
 
             self.last_message_info[uid] = {
-                "content": message.content if message.content else "(Metin icerigi yok - Dosya/Embed vb.)",
+                "content": message.content if message.content else "(Görsel/Dosya/Embed içeriği)",
                 "link": link,
                 "timestamp": istanbul_time
             }
 
             if self.notified[uid]:
-                print(f"[{uid}] Kullanici tekrar mesaj gonderdi. Sayac sifirlandi.")
+                print(f"[{uid}] Kullanıcı tekrar aktif oldu, sayaç sıfırlandı.")
             self.notified[uid] = False
 
     async def check_activity(self):
+        """Kullanıcıların sessiz kalıp kalmadığını kontrol eden döngü."""
         await self.wait_until_ready()
         while not self.is_closed():
             current_time = time.time()
             for uid in TARGET_IDS:
-                # Sadece en az 1 mesaj gorduysek kontrol et
                 if self.last_message_time[uid] is None:
                     continue
 
-                time_passed = current_time - self.last_message_time[uid]
-                if time_passed >= self.bekleme_saniye and not self.notified[uid]:
-                    print(f"[BILDIRIM] {uid} icin webhook tetikleniyor...")
-                    self.send_webhook(uid)
+                passed = current_time - self.last_message_time[uid]
+                if passed >= self.bekleme_saniye and not self.notified[uid]:
+                    print(f"[UYARI] {uid} sessizliğe gömüldü, bildirim gönderiliyor...")
+                    await self.send_webhook(uid)
                     self.notified[uid] = True
-            await asyncio.sleep(5)
+            await asyncio.sleep(5) # 5 saniyede bir kontrol et
 
-    def send_webhook(self, uid):
-        if not WEBHOOK:
+    async def send_webhook(self, uid):
+        """Async (asenkron) olarak bildirim gönderir."""
+        if not WEBHOOK_URL or not self.session:
             return
 
         info = self.last_message_info.get(uid)
         bekleme_dk = self.bekleme_saniye // 60
 
         if info:
-            son_mesaj_saati = info["timestamp"].strftime("%H:%M")
-            son_mesaj = info["content"]
-            git_link = info["link"]
+            saat = info["timestamp"].strftime("%H:%M")
+            mesaj = info["content"]
+            link = info["link"]
         else:
-            son_mesaj_saati = "Bilinmiyor"
-            son_mesaj = "Bilinmiyor"
-            git_link = "Mevcut degil"
+            saat, mesaj, link = "Bilinmiyor", "Veri yok", "Mevcut değil"
 
         embed = {
-            "title": "KULLANICI MESAJ KESMİŞTİR XD",
+            "title": "KULLANICI SESSİZLİĞE GÖMÜLDÜ! 🔴",
             "color": 0xFF4444,
             "fields": [
-                {"name": "Kullanıcı ID", "value": f"<@{uid}> (`{uid}`)", "inline": False},
-                {"name": "Sure", "value": f"{bekleme_dk} dakika sessiz kaldi", "inline": False},
-                {"name": "Son Mesaj Saati", "value": f"`{son_mesaj_saati}`", "inline": False},
-                {"name": "Son Mesaj", "value": son_mesaj[:1024], "inline": False},
-                {"name": "Git", "value": git_link, "inline": False}
+                {"name": "Hedef", "value": f"<@{uid}> (`{uid}`)", "inline": False},
+                {"name": "Süre", "value": f"{bekleme_dk} dk sessiz", "inline": True},
+                {"name": "Son Mesaj", "value": f"`{saat}`", "inline": True},
+                {"name": "İçerik", "value": mesaj[:1024], "inline": False},
+                {"name": "Kanala Git", "value": f"[Mesajı Gör]({link})", "inline": False}
             ],
-            "footer": {"text": "RED SKY TARGET SYSTEM"}
+            "footer": {"text": "RED SKY MONITORING SYSTEM"}
         }
 
         data = {"username": "RED SKY TARGET SYSTEM", "embeds": [embed]}
 
         try:
-            response = requests.post(WEBHOOK, json=data)
-            if response.status_code in [200, 204]:
-                print(f"[{uid}] Webhook basariyla iletildi.")
-            else:
-                print(f"[{uid}] Webhook hatasi: {response.status_code}")
+            async with self.session.post(WEBHOOK_URL, json=data) as resp:
+                if resp.status in [200, 204]:
+                    print(f"[{uid}] Webhook başarıyla gönderildi.")
+                else:
+                    print(f"[{uid}] Webhook hatası: {resp.status}")
         except Exception as e:
-            print(f"[{uid}] Webhook gonderim hatasi: {e}")
+            print(f"[{uid}] Webhook gönderilemedi: {e}")
 
+    async def close(self):
+        """Bot kapandığında oturumu da kapatır."""
+        if self.session:
+            await self.session.close()
+        await super().close()
 
+# Flask keep_alive (Render/Replit için)
 keep_alive()
 
-if not TOKEN or not TARGET_IDS or not WEBHOOK:
-    print("HATA: TOKEN, TARGET_IDS, WEBHOOK degiskenlerini Environment kismina ekleyin.")
+if not TOKEN or not TARGET_IDS or not WEBHOOK_URL:
+    print("HATA: TOKEN, TARGET_IDS veya WEBHOOK değişkenleri bulunamadı!")
 else:
+    # Tüm Yetkileri (Intents) tanımlıyoruz
+    intents = discord.Intents.all()
+    
     try:
-        client = TrackerClient()
+        client = TrackerClient(intents=intents)
         client.run(TOKEN)
     except discord.LoginFailure:
-        print("HATA: Hatali token!")
+        print("HATA: Token geçersiz!")
     except Exception as e:
-        print(f"Beklenmeyen bir hata olustu: {e}")
+        print(f"Beklenmeyen Hata: {e}")
